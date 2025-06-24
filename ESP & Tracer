@@ -1,0 +1,196 @@
+-- client sided ESP / tracer for finding character's location
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local UI_BUTTON_SIZE = UDim2.new(0, 100, 0, 30)
+local DEFAULT_COLOR = Color3.fromRGB(255, 0, 0)
+
+local visualsEnabled = true
+local activeVisuals = {}
+
+local function getColor(player)
+	local team = player.Team
+	return (team and team.TeamColor and team.TeamColor.Color) or DEFAULT_COLOR
+end
+
+local function createBillboard(head, color)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "CoderDistance"
+	billboard.Size = UDim2.new(0, 100, 0, 40)
+	billboard.StudsOffset = Vector3.new(0, 3, 0)
+	billboard.AlwaysOnTop = true
+	billboard.Adornee = head
+
+	local label = Instance.new("TextLabel")
+	label.Name = "DistanceLabel"
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.Font = Enum.Font.Code
+	label.TextScaled = true
+	label.TextColor3 = color
+	label.TextStrokeColor3 = Color3.new(0, 0, 0)
+	label.TextStrokeTransparency = 0
+	label.Text = ""
+	label.Parent = billboard
+
+	return billboard
+end
+
+local function createBeam(char1, char2, color)
+	local a0 = Instance.new("Attachment", char1:FindFirstChild("HumanoidRootPart"))
+	local a1 = Instance.new("Attachment", char2:FindFirstChild("HumanoidRootPart"))
+
+	local beam = Instance.new("Beam")
+	beam.Attachment0 = a0
+	beam.Attachment1 = a1
+	beam.Color = ColorSequence.new(color)
+	beam.Width0 = 0.05
+	beam.Width1 = 0.05
+	beam.FaceCamera = true
+	beam.Transparency = NumberSequence.new(0.1)
+	beam.LightEmission = 1
+	beam.Name = "CoderBeam"
+	beam.Parent = a0
+
+	return beam, a0, a1
+end
+
+local function addHighlights(character, color)
+	local highlightParts = {}
+	for _, part in ipairs(character:GetDescendants()) do
+		if part:IsA("BasePart") and not part:FindFirstChild("CoderHighlight") then
+			local h = Instance.new("Highlight")
+			h.Name = "CoderHighlight"
+			h.Adornee = part
+			h.FillColor = color
+			h.OutlineColor = Color3.new(0, 0, 0)
+			h.FillTransparency = 0.4
+			h.OutlineTransparency = 0
+			h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+			h.Parent = part
+			table.insert(highlightParts, h)
+		end
+	end
+	return highlightParts
+end
+
+local function removeAllVisualsFor(player)
+	if activeVisuals[player] then
+		for _, item in ipairs(activeVisuals[player]) do
+			if typeof(item) == "Instance" then item:Destroy()
+			elseif typeof(item) == "RBXScriptConnection" then item:Disconnect() end
+		end
+		activeVisuals[player] = nil
+	end
+end
+
+local function trackPlayer(target)
+	if target == LocalPlayer then return end
+	if not visualsEnabled then return end
+
+	local function setup()
+		local myChar = LocalPlayer.Character
+		local theirChar = target.Character
+		if not (myChar and theirChar) then return end
+
+		local myHRP = myChar:FindFirstChild("HumanoidRootPart")
+		local theirHRP = theirChar:FindFirstChild("HumanoidRootPart")
+		local theirHead = theirChar:FindFirstChild("Head")
+		if not (myHRP and theirHRP and theirHead) then return end
+
+		removeAllVisualsFor(target)
+
+		local visuals = {}
+		local color = getColor(target)
+
+		local bb = createBillboard(theirHead, color)
+		bb.Parent = theirHead
+		table.insert(visuals, bb)
+
+		local beam, a0, a1 = createBeam(myChar, theirChar, color)
+		table.insert(visuals, beam)
+		table.insert(visuals, a0)
+		table.insert(visuals, a1)
+		
+		local highlights = addHighlights(theirChar, color)
+		for _, h in ipairs(highlights) do table.insert(visuals, h) end
+
+		-- Update distance
+		local updateConn = RunService.RenderStepped:Connect(function()
+			if myHRP and theirHRP and bb:FindFirstChild("DistanceLabel") then
+				local dist = (myHRP.Position - theirHRP.Position).Magnitude
+				bb.DistanceLabel.Text = string.format("%.1f studs", dist)
+			end
+		end)
+		table.insert(visuals, updateConn)
+
+		activeVisuals[target] = visuals
+	end
+
+	task.delay(0.5, setup)
+end
+
+local function handlePlayer(p)
+	p.CharacterAdded:Connect(function()
+		task.wait(1)
+		if visualsEnabled then trackPlayer(p) end
+	end)
+	p.CharacterRemoving:Connect(function() removeAllVisualsFor(p) end)
+
+	if p.Character then trackPlayer(p) end
+end
+
+local function makeToggleUI() -- basic UI, not moveable or anything but it works
+	local gui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
+	gui.Name = "CoderToggleGui"
+	gui.ResetOnSpawn = false
+
+	local button = Instance.new("TextButton", gui)
+	button.Size = UI_BUTTON_SIZE
+	button.Position = UDim2.new(1, -UI_BUTTON_SIZE.X.Offset - 10, 1, -UI_BUTTON_SIZE.Y.Offset - 10)
+	button.AnchorPoint = Vector2.new(0, 1)
+	button.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+	button.TextColor3 = Color3.new(1, 0, 0)
+	button.Font = Enum.Font.Code
+	button.TextScaled = true
+	button.BorderSizePixel = 0
+	button.Text = "Vision: ON"
+
+	button.MouseButton1Click:Connect(function()
+		visualsEnabled = not visualsEnabled
+		button.Text = visualsEnabled and "Vision: ON" or "Vision: OFF"
+
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LocalPlayer then
+				if visualsEnabled then
+					trackPlayer(p)
+				else
+					removeAllVisualsFor(p)
+				end
+			end
+		end
+	end)
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+	if p ~= LocalPlayer then handlePlayer(p) end
+end
+Players.PlayerAdded:Connect(function(p)
+	if p ~= LocalPlayer then handlePlayer(p) end
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+	task.wait(1)
+	if visualsEnabled then
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LocalPlayer then
+				trackPlayer(p)
+			end
+		end
+	end
+end)
+
+makeToggleUI()
